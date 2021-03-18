@@ -116,7 +116,7 @@ client-side queuing delay adulterating the latency measurements.
 
 Suggested Usage of Adhoc Mode
 ===============
-To simulate production environment QPS requests, this repositry add special support for multiple QPS intensities and its Times. After finish one QPS intensity injection, the connection will not be deleted but start next another round QPS injection. Currently Adhoc mode not support Agent mode.
+To simulate production environment QPS requests, this repositry add special support for multiple QPS intensities and its Times. After finish one QPS intensity injection, the connection will not be deleted but start next another round QPS injection, which saves the time of pthread barrier wait for multiple threads. Currently Adhoc mode not support Agent mode.
 For example,
 ```
     ./mutilate -s 172.16.190.84 -c 16 --thread 52 -G 1000000 -G 10000  --adhoc -u 0.5 --save 1.txt
@@ -149,6 +149,7 @@ For example,
         Saving latency samples to 1.txt.
 
 ```
+
 Command-line Options
 ====================
 
