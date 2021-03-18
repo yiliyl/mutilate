@@ -28,7 +28,9 @@ by the number of servers." int default="10000"
 option "update" u "Ratio of set:get commands." float default="0.0"
 
 text "\nAdvanced options:"
-
+option "adhoc" - "Continuous connection under different qps intensity."
+option "qps_group" G "Multi QPSs for different workload intensity." int multiple
+option "time_group" H "Multi Times for different workload intensity." int multiple
 option "username" U "Username to use for SASL authentication." string
 option "password" P "Password to use for SASL authentication." string
 option "threads" T "Number of threads to spawn." int default="1"

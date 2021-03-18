@@ -45,6 +45,10 @@ using namespace std;
 gengetopt_args_info args;
 char random_char[2 * 1024 * 1024];  // Buffer used to generate random values.
 
+vector<int> adhoc_qps;
+vector<int> adhoc_times;
+unsigned int adhoc_size;
+
 #ifdef HAVE_LIBZMQ
 vector<zmq::socket_t*> agent_sockets;
 zmq::context_t context(1);
@@ -73,16 +77,27 @@ void go(const vector<string> &servers, options_t &options,
 , zmq::socket_t* socket = NULL
 #endif
 );
-
+void go_adhoc(const vector<string> &servers, options_t &options
+#ifdef HAVE_LIBZMQ
+, zmq::socket_t* socket = NULL
+#endif
+);
 void do_mutilate(const vector<string> &servers, options_t &options,
                  ConnectionStats &stats, bool master = true
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket = NULL
 #endif
 );
+void do_mutilate_adhoc(const vector<string> &servers, options_t &options,
+                  vector<ConnectionStats> &stats_array, bool master = true
+#ifdef HAVE_LIBZMQ
+, zmq::socket_t* socket = NULL
+#endif
+);
 void args_to_options(options_t* options);
 void* thread_main(void *arg);
-
+void* thread_main_adhoc(void *arg);
+void print(ConnectionStats stats);
 #ifdef HAVE_LIBZMQ
 static std::string s_recv (zmq::socket_t &socket) {
   zmq::message_t message;
@@ -577,11 +592,13 @@ int main(int argc, char **argv) {
       printf(" %8.1f", stats.get_qps());
       printf(" %8d\n", q);
     }    
-  } else {
+  } else if (args.adhoc_given){
+     go_adhoc(servers, options);
+  }else {
     go(servers, options, stats);
   }
 
-  if (!args.scan_given && !args.loadonly_given) {
+  if (!args.scan_given && !args.loadonly_given && !args.adhoc_given) {
     stats.print_header();
     stats.print_stats("read",   stats.get_sampler);
     stats.print_stats("update", stats.set_sampler);
@@ -746,6 +763,102 @@ void go(const vector<string>& servers, options_t& options,
 #endif
 }
 
+void go_adhoc(const vector<string>& servers, options_t& options
+#ifdef HAVE_LIBZMQ
+, zmq::socket_t* socket
+#endif
+) {
+#ifdef HAVE_LIBZMQ
+  if (args.agent_given > 0) {
+    prep_agent(servers, options);
+  }
+#endif
+
+  if (options.threads > 1) {
+    pthread_t pt[options.threads];
+    struct thread_data td[options.threads];
+#ifdef __clang__
+    vector<string>* ts = static_cast<vector<string>*>(alloca(sizeof(vector<string>) * options.threads));
+#else
+    vector<string> ts[options.threads];
+#endif
+
+#ifdef __linux__
+    int current_cpu = -1;
+#endif
+
+    for (int t = 0; t < options.threads; t++) {
+      td[t].options = &options;
+#ifdef HAVE_LIBZMQ
+      td[t].socket = socket;
+#endif
+      if (t == 0) td[t].master = true;
+      else td[t].master = false;
+
+      if (options.roundrobin) {
+        for (unsigned int i = (t % servers.size());
+             i < servers.size(); i += options.threads)
+          ts[t].push_back(servers[i % servers.size()]);
+
+        td[t].servers = &ts[t];
+      } else {
+        td[t].servers = &servers;
+      }
+
+      pthread_attr_t attr;
+      pthread_attr_init(&attr);
+
+#ifdef __linux__
+      if (args.affinity_given) {
+        int max_cpus = 8 * sizeof(cpu_set_t);
+        cpu_set_t m;
+        CPU_ZERO(&m);
+        sched_getaffinity(0, sizeof(cpu_set_t), &m);
+
+        for (int i = 0; i < max_cpus; i++) {
+          int c = (current_cpu + i + 1) % max_cpus;
+          if (CPU_ISSET(c, &m)) {
+            CPU_ZERO(&m);
+            CPU_SET(c, &m);
+            int ret;
+            if ((ret = pthread_attr_setaffinity_np(&attr,
+                                                   sizeof(cpu_set_t), &m)))
+              DIE("pthread_attr_setaffinity_np(%d) failed: %s",
+                  c, strerror(ret));
+            current_cpu = c;
+            break;
+          }
+        }
+      }
+#endif
+
+      if (pthread_create(&pt[t], &attr, thread_main_adhoc, &td[t]))
+        DIE("pthread_create() failed");
+    }
+    vector<vector<ConnectionStats>> stats_arrays;
+    for (int t = 0; t < options.threads; t++) {
+        vector<ConnectionStats> *stats_array;
+        if (pthread_join(pt[t], (void**)&stats_array)) DIE("pthread_join() failed");
+        stats_arrays.push_back(*stats_array);
+        delete stats_array; //TODO
+    }
+    for(unsigned int i=0;i<adhoc_size; i++){
+      ConnectionStats stats;
+      for (int t = 0; t < options.threads; t++) {
+        stats.accumulate(stats_arrays[t][i]);
+      }
+      print(stats);//TODO
+    }
+
+  } else if (options.threads == 1) {
+    vector<ConnectionStats> stats_array;
+    do_mutilate_adhoc(servers, options, stats_array, true);
+    for(unsigned int i=0;i<adhoc_size;i++){
+      print(stats_array[i]);
+    }
+  } 
+}
+
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
 
@@ -758,6 +871,17 @@ void* thread_main(void *arg) {
 );
 
   return cs;
+}
+
+void* thread_main_adhoc(void *arg) {
+  struct thread_data *td = (struct thread_data *) arg;
+  vector<ConnectionStats>* cs_array= (vector<ConnectionStats>*)malloc(sizeof(vector<ConnectionStats>));
+  do_mutilate_adhoc(*td->servers, *td->options, *cs_array, td->master
+#ifdef HAVE_LIBZMQ
+, td->socket
+#endif
+);
+  return cs_array; 
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
@@ -1024,6 +1148,285 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   event_base_free(base);
 }
 
+void do_mutilate_adhoc(const vector<string>& servers, options_t& options,
+                 vector<ConnectionStats>& stats_array, bool master
+#ifdef HAVE_LIBZMQ
+, zmq::socket_t* socket
+#endif
+) {
+  int loop_flag =
+    (options.blocking || args.blocking_given) ? EVLOOP_ONCE : EVLOOP_NONBLOCK;
+
+  char *saveptr = NULL;  // For reentrant strtok().
+
+  struct event_base *base;
+  struct evdns_base *evdns;
+  struct event_config *config;
+
+  if ((config = event_config_new()) == NULL) DIE("event_config_new() fail");
+
+#ifdef HAVE_DECL_EVENT_BASE_FLAG_PRECISE_TIMER
+  if (event_config_set_flag(config, EVENT_BASE_FLAG_PRECISE_TIMER))
+    DIE("event_config_set_flag(EVENT_BASE_FLAG_PRECISE_TIMER) fail");
+#endif
+
+  if ((base = event_base_new_with_config(config)) == NULL)
+    DIE("event_base_new() fail");
+
+  //  evthread_use_pthreads();
+
+  if ((evdns = evdns_base_new(base, 1)) == 0) DIE("evdns");
+
+  //  event_base_priority_init(base, 2);
+
+  // FIXME: May want to move this to after all connections established.
+  double start = get_time();
+  double now = start;
+
+  vector<Connection*> connections;
+  vector<Connection*> server_lead;
+
+  for (auto s: servers) {
+    // Split args.server_arg[s] into host:port using strtok().
+    char *s_copy = new char[s.length() + 1];
+    strcpy(s_copy, s.c_str());
+
+    char *h_ptr = strtok_r(s_copy, ":", &saveptr);
+    char *p_ptr = strtok_r(NULL, ":", &saveptr);
+
+    if (h_ptr == NULL) DIE("strtok(.., \":\") failed to parse %s", s.c_str());
+
+    string hostname = h_ptr;
+    string port = "11211";
+    if (p_ptr) port = p_ptr;
+
+    delete[] s_copy;
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    for (int c = 0; c < conns; c++) {
+      Connection* conn = new Connection(base, evdns, hostname, port, options,
+                                        args.agentmode_given ? false :
+                                        true);
+      connections.push_back(conn);
+      if (c == 0) server_lead.push_back(conn);
+    }
+  }
+
+  // Wait for all Connections to become IDLE.
+  while (1) {
+    // FIXME: If all connections become ready before event_base_loop
+    // is called, this will deadlock.
+    event_base_loop(base, EVLOOP_ONCE);
+
+    bool restart = false;
+    for (Connection *conn: connections)
+      if (!conn->is_ready()) restart = true;
+
+    if (restart) continue;
+    else break;
+  }
+
+  // Load database on lead connection for each server.
+  if (!options.noload) {
+    V("Loading database.");
+
+    for (auto c: server_lead) c->start_loading();
+
+    // Wait for all Connections to become IDLE.
+    while (1) {
+      // FIXME: If all connections become ready before event_base_loop
+      // is called, this will deadlock.
+      event_base_loop(base, EVLOOP_ONCE);
+
+      bool restart = false;
+      for (Connection *conn: connections)
+        if (!conn->is_ready()) restart = true;
+
+      if (restart) continue;
+      else break;
+    }
+  }
+
+  if (options.loadonly) {
+    evdns_base_free(evdns, 0);
+    event_base_free(base);
+    return;
+  }
+
+  // FIXME: Remove.  Not needed, testing only.
+  //  // FIXME: Synchronize start_time here across threads/nodes.
+  //  pthread_barrier_wait(&barrier);
+
+  // Warmup connection.
+  if (options.warmup > 0) {
+    if (master) V("Warmup start.");
+
+#ifdef HAVE_LIBZMQ
+    if (args.agent_given || args.agentmode_given) {
+      if (master) V("Synchronizing.");
+
+      // 1. thread barrier: make sure our threads ready before syncing agents
+      // 2. sync agents: all threads across all agents are now ready
+      // 3. thread barrier: don't release our threads until all agents ready
+      pthread_barrier_wait(&barrier);
+      if (master) sync_agent(socket);
+      pthread_barrier_wait(&barrier);
+
+      if (master) V("Synchronized.");
+    }
+#endif
+
+    int old_time = options.time;
+    //    options.time = 1;
+
+    start = get_time();
+    for (Connection *conn: connections) {
+      conn->start_time = start;
+      conn->options.time = options.warmup;
+      conn->start(); // Kick the Connection into motion.
+    }
+
+    while (1) {
+      event_base_loop(base, loop_flag);
+
+      //#ifdef USE_CLOCK_GETTIME
+      //      now = get_time();
+      //#else
+      struct timeval now_tv;
+      event_base_gettimeofday_cached(base, &now_tv);
+      now = tv_to_double(&now_tv);
+      //#endif
+
+      bool restart = false;
+      for (Connection *conn: connections)
+        if (!conn->check_exit_condition(now))
+          restart = true;
+
+      if (restart) continue;
+      else break;
+    }
+
+    bool restart = false;
+    for (Connection *conn: connections)
+      if (!conn->is_ready()) restart = true;
+
+    if (restart) {
+
+    // Wait for all Connections to become IDLE.
+    while (1) {
+      // FIXME: If there were to use EVLOOP_ONCE and all connections
+      // become ready before event_base_loop is called, this will
+      // deadlock.  We should check for IDLE before calling
+      // event_base_loop.
+      event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
+
+      bool restart = false;
+      for (Connection *conn: connections)
+        if (!conn->is_ready()) restart = true;
+
+      if (restart) continue;
+      else break;
+    }
+    }
+
+    for (Connection *conn: connections) {
+      conn->reset();
+      conn->options.time = old_time;
+    }
+
+    if (master) V("Warmup stop.");
+  }
+
+
+  // FIXME: Synchronize start_time here across threads/nodes.
+  pthread_barrier_wait(&barrier);  //very long time before all the connections are ready, e.g. 52~1.4s TODO
+
+  if (master && args.wait_given) {
+    if (get_time() < boot_time + args.wait_arg) {
+      double t = (boot_time + args.wait_arg)-get_time();
+      V("Sleeping %.1fs for -W.", t);
+      sleep_time(t);
+    }
+  }
+
+#ifdef HAVE_LIBZMQ
+  if (args.agent_given || args.agentmode_given) {
+    if (master) V("Synchronizing.");
+
+    pthread_barrier_wait(&barrier);
+    if (master) sync_agent(socket);
+    pthread_barrier_wait(&barrier);
+
+    if (master) V("Synchronized.");
+  }
+#endif
+
+  if (master && !args.scan_given && !args.search_given)
+    V("started at %f", get_time());
+
+/**
+ * ****************************************************************** *
+ *  Adhoc mode start with continuous QPS intensities.                 *
+ * ****************************************************************** *
+ */
+    for (unsigned int i=0; i<adhoc_size; i++){
+      start = get_time();
+      for (Connection *conn: connections) {
+        double lambda = (double) adhoc_qps[i] / (double) options.lambda_denom;
+        conn->reset_lambda(lambda);
+        conn->options.time = adhoc_times[i];
+        conn->start_time = start;
+        conn->start(); // Kick the Connection into motion.
+        if (i>0) conn->stats = ConnectionStats(); //re-init connection stats
+      }
+
+      //  V("Start = %f", start);
+
+      // Main event loop.
+      while (1) {
+        event_base_loop(base, loop_flag);
+
+        //#if USE_CLOCK_GETTIME
+        //    now = get_time();
+        //#else
+        struct timeval now_tv;
+        event_base_gettimeofday_cached(base, &now_tv);
+        now = tv_to_double(&now_tv);
+        //#endif
+
+        bool restart = false;
+        for (Connection *conn: connections)
+          if (!conn->check_exit_condition(now))
+            restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+
+      ConnectionStats stats;
+      // Tear-down and accumulate stats.
+      for (Connection *conn: connections) {
+        stats.accumulate(conn->stats); 
+      }
+      stats.start = start;
+      stats.stop = now;
+      stats_array.push_back(stats);
+    }
+    for (Connection *conn: connections) {
+        delete conn;
+    }
+/* ****************************************************************** *
+ * adhoc mode stop here!                                              *
+ * ********************************************************************
+ */
+  event_config_free(config);
+  evdns_base_free(evdns, 0);
+  event_base_free(base);
+}
+
+
 void args_to_options(options_t* options) {
   //  bzero(options, sizeof(options_t));
   options->connections = args.connections_arg;
@@ -1090,6 +1493,32 @@ void args_to_options(options_t* options) {
   options->oob_thread = false;
   options->skip = args.skip_given;
   options->moderate = args.moderate_given;
+  options->adhoc = args.adhoc_given;
+  if (args.adhoc_given){
+    I("Attation: Adhoc mode start with multiple QPSs and Times!");
+    if (args.qps_group_given){
+
+      for (unsigned int i = 0; i < args.qps_group_given; i++)
+        adhoc_qps.push_back(int(args.qps_group_arg[i]));
+
+      adhoc_size = adhoc_qps.size();
+
+      if(args.time_group_given){
+        for (unsigned int i = 0; i < args.time_group_given; i++)
+          adhoc_times.push_back(int(args.time_group_arg[i]));
+        if (adhoc_size != adhoc_times.size())
+           DIE("Adhoc QPSs length not match with Times length !");
+      }else{
+        W("Times not given, will use default 5s for each QPS.");
+        for (unsigned int i = 0; i < adhoc_size; i++)
+          adhoc_times.push_back(5); // default 5s per intensity duration.
+      }
+    }else{
+      DIE("You should input QPSs and Times for each adhoc intensity!");
+    }
+  } else if (args.qps_group_given || args.time_group_given){
+    DIE("If you want to input mutiple QPSs and Times, you need to declare *--adhoc* first!");
+  }
 }
 
 void init_random_stuff() {
@@ -1107,4 +1536,42 @@ void init_random_stuff() {
     cursor += max;
   }
 }
+void print(ConnectionStats stats) {
+    stats.print_header();
+    stats.print_stats("read",   stats.get_sampler);
+    stats.print_stats("update", stats.set_sampler);
+    stats.print_stats("op_q",   stats.op_sampler);
 
+    int total = stats.gets + stats.sets;
+
+    printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
+           total / (stats.stop - stats.start),
+           total, stats.stop - stats.start);
+
+    printf("\n");
+
+    printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
+           (double) stats.get_misses/stats.gets*100);
+
+    printf("Skipped TXs = %" PRIu64 " (%.1f%%)\n\n", stats.skips,
+           (double) stats.skips / total * 100);
+
+    printf("RX %10" PRIu64 " bytes : %6.1f MB/s\n",
+           stats.rx_bytes,
+           (double) stats.rx_bytes / 1024 / 1024 / (stats.stop - stats.start));
+    printf("TX %10" PRIu64 " bytes : %6.1f MB/s\n",
+           stats.tx_bytes,
+           (double) stats.tx_bytes / 1024 / 1024 / (stats.stop - stats.start));
+
+    if (args.save_given) {
+      printf("Saving latency samples to %s.\n", args.save_arg);
+
+      FILE *file;
+      if ((file = fopen(args.save_arg, "a")) == NULL) //change to append mode
+        DIE("--save: failed to open %s: %s", args.save_arg, strerror(errno));
+
+      for (auto i: stats.get_sampler.samples) {
+        fprintf(file, "%f %f\n", i.start_time - boot_time, i.time());
+      }
+    }
+}

@@ -47,6 +47,7 @@ public:
   void start() { drive_write_machine(); }
   void start_loading();
   void reset();
+  void reset_lambda(double lambda);
   bool check_exit_condition(double now = 0.0);
 
   // event callbacks

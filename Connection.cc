@@ -89,6 +89,12 @@ void Connection::reset() {
 }
 
 /**
+ * Reset lambda for different QPS intensity.
+*/
+void reset_lambda(double lambda) {
+  iagen->set_lambda(lambda);
+}
+
  * Set our event processing priority.
  */
 void Connection::set_priority(int pri) {

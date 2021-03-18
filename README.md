@@ -146,6 +146,12 @@ Command-line Options
       -u, --update=FLOAT            Ratio of set:get commands.  (default=`0.0')
     
     Advanced options:
+
+          --adhoc                   Continuous connection under different qps
+                                      intensity.
+      -G, --qps_group=INT           Multi QPSs for different workload intensity.
+      -H, --time_group=INT          Multi Times for different workload intensity.
+
       -U, --username=STRING         Username to use for SASL authentication.
       -P, --password=STRING         Password to use for SASL authentication.
       -T, --threads=INT             Number of threads to spawn.  (default=`1')
