@@ -114,6 +114,41 @@ per memcached server thread.  This ought to be enough outstanding
 requests to cause server-side queuing delay, and no possibility of
 client-side queuing delay adulterating the latency measurements.
 
+Suggested Usage of Adhoc Mode
+===============
+To simulate production environment QPS requests, this repositry add special support for multiple QPS intensities and its Times. After finish one QPS intensity injection, the connection will not be deleted but start next another round QPS injection. Currently Adhoc mode not support Agent mode.
+For example,
+```
+    ./mutilate -s 172.16.190.84 -c 16 --thread 52 -G 1000000 -G 10000  --adhoc -u 0.5 --save 1.txt
+        #type       avg     std     min     5th    10th    90th    95th    99th
+        read      201.3    43.5    28.1   123.1   139.7   249.8   262.2   275.5
+        update    200.8    43.2    34.0   122.7   139.1   249.5   261.7   275.5
+        op_q        1.0     0.0     1.0     1.0     1.0     1.1     1.1     1.1
+
+        Total QPS = 999757.2 (4998867 / 5.0s)
+
+        Misses = 0 (0.0%)
+        Skipped TXs = 0 (0.0%)
+
+        RX  635772262 bytes :  121.3 MB/s
+        TX  704584410 bytes :  134.4 MB/s
+        Saving latency samples to 1.txt.
+
+        #type       avg     std     min     5th    10th    90th    95th    99th
+        read      401.6 10479.5    23.2    52.6    64.5   246.6   269.4  3352.8
+        update    381.4  9340.1    21.1    52.3    64.4   246.1   269.5  3922.0
+        op_q        1.0     0.0     1.0     1.0     1.0     1.1     1.1     1.1
+
+        Total QPS = 10050.6 (50253 / 5.0s)
+
+        Misses = 0 (0.0%)
+        Skipped TXs = 0 (0.0%)
+
+        RX    6371826 bytes :    1.2 MB/s
+        TX    6952086 bytes :    1.3 MB/s
+        Saving latency samples to 1.txt.
+
+```
 Command-line Options
 ====================
 
