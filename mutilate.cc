@@ -875,7 +875,7 @@ void* thread_main(void *arg) {
 
 void* thread_main_adhoc(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
-  vector<ConnectionStats>* cs_array= (vector<ConnectionStats>*)malloc(sizeof(vector<ConnectionStats>));
+  vector<ConnectionStats>* cs_array = new vector<ConnectionStats>();
   do_mutilate_adhoc(*td->servers, *td->options, *cs_array, td->master
 #ifdef HAVE_LIBZMQ
 , td->socket
