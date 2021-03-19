@@ -1493,7 +1493,6 @@ void args_to_options(options_t* options) {
   options->oob_thread = false;
   options->skip = args.skip_given;
   options->moderate = args.moderate_given;
-  options->adhoc = args.adhoc_given;
   if (args.adhoc_given){
     I("Attation: Adhoc mode start with multiple QPSs and Times!");
     if (args.qps_group_given){
