@@ -1374,7 +1374,7 @@ void do_mutilate_adhoc(const vector<string>& servers, options_t& options,
     for (unsigned int i=0; i<adhoc_size; i++){
       start = get_time();
       for (Connection *conn: connections) {
-        double lambda = (double) adhoc_qps[i] / (double) options.lambda_denom;
+        double lambda = (double) adhoc_qps[i] / (double) options.lambda_denom * args.lambda_mul_arg;
         conn->reset_lambda(lambda);
         conn->options.time = adhoc_times[i];
         conn->start_time = start;
@@ -1499,7 +1499,8 @@ void args_to_options(options_t* options) {
 
       for (unsigned int i = 0; i < args.qps_group_given; i++)
         adhoc_qps.push_back(int(args.qps_group_arg[i]));
-
+      
+      options->lambda = (double) adhoc_qps[0] / (double) options.lambda_denom * args.lambda_mul_arg;
       adhoc_size = adhoc_qps.size();
 
       if(args.time_group_given){
